@@ -15,7 +15,7 @@ import (
 	"github.com/portainer/portainer/api/cli"
 	"github.com/portainer/portainer/api/crypto"
 	"github.com/portainer/portainer/api/database"
-	"github.com/portainer/portainer/api/database/boltdb"
+	// "github.com/portainer/portainer/api/database/boltdb"
 	"github.com/portainer/portainer/api/database/models"
 	"github.com/portainer/portainer/api/dataservices"
 	"github.com/portainer/portainer/api/datastore"
@@ -81,18 +81,23 @@ func initFileService(dataStorePath string) portainer.FileService {
 }
 
 func initDataStore(flags *portainer.CLIFlags, secretKey []byte, fileService portainer.FileService, shutdownCtx context.Context) dataservices.DataStore {
-	connection, err := database.NewDatabase("boltdb", *flags.Data, secretKey)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed creating database connection")
-	}
 
-	if bconn, ok := connection.(*boltdb.DbConnection); ok {
-		bconn.MaxBatchSize = *flags.MaxBatchSize
-		bconn.MaxBatchDelay = *flags.MaxBatchDelay
-		bconn.InitialMmapSize = *flags.InitialMmapSize
-	} else {
-		log.Fatal().Msg("failed creating database connection: expecting a boltdb database type but a different one was received")
+	connection, err := database.NewDatabase("postgres", *flags.Data, secretKey)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed creating PostgreSQL database connection")
 	}
+	// connection, err := database.NewDatabase("boltdb", *flags.Data, secretKey)
+	// if err != nil {
+	// 	log.Fatal().Err(err).Msg("failed creating database connection")
+	// }
+
+	// if bconn, ok := connection.(*boltdb.DbConnection); ok {
+	// 	bconn.MaxBatchSize = *flags.MaxBatchSize
+	// 	bconn.MaxBatchDelay = *flags.MaxBatchDelay
+	// 	bconn.InitialMmapSize = *flags.InitialMmapSize
+	// } else {
+	// 	log.Fatal().Msg("failed creating database connection: expecting a boltdb database type but a different one was received")
+	// }
 
 	store := datastore.NewStore(*flags.Data, fileService, connection)
 
