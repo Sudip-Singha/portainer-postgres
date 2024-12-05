@@ -229,24 +229,24 @@ func (connection *DbConnection) Open() error {
 	// }()
 
 	// Create the "users" table if it doesn't exist
-	createTable := `CREATE TABLE IF NOT EXISTS users (
-		id SERIAL PRIMARY KEY,
-		name VARCHAR(100) NOT NULL,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	)`
-	_, err = db.Exec(createTable)
-	if err != nil {
-		return fmt.Errorf("failed to create table: %w", err)
-	}
+	// createTable := `CREATE TABLE IF NOT EXISTS users (
+	// 	id SERIAL PRIMARY KEY,
+	// 	name VARCHAR(100) NOT NULL,
+	// 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	// )`
+	// _, err = db.Exec(createTable)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to create table: %w", err)
+	// }
 
-	// Insert a test user into the "users" table
-	insertUser := `INSERT INTO users (name) VALUES($1) RETURNING id`
-	var userID int
-	err = db.QueryRow(insertUser, "test").Scan(&userID)
-	if err != nil {
-		return fmt.Errorf("failed to insert user: %w", err)
-	}
-	log.Info().Int("user_id", userID).Msg("inserted user")
+	// // Insert a test user into the "users" table
+	// insertUser := `INSERT INTO users (name) VALUES($1) RETURNING id`
+	// var userID int
+	// err = db.QueryRow(insertUser, "test").Scan(&userID)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to insert user: %w", err)
+	// }
+	// log.Info().Int("user_id", userID).Msg("inserted user")
 
 	db.SetMaxOpenConns(DatabaseMaxOpen)
 	db.SetMaxIdleConns(DatabaseMaxIdle)
@@ -278,36 +278,51 @@ func (connection *DbConnection) Close() error {
 
 // UpdateTx executes the given function within a transaction
 func (connection *DbConnection) UpdateTx(fn func(portainer.Transaction) error) error {
+	// Check if the connection is initialized
 	if connection.DB == nil {
 		return ErrNoConnection
 	}
 
+	// Begin transaction
 	tx, err := connection.DB.BeginTx(connection.ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
+	if tx == nil {
+		return fmt.Errorf("transaction object is nil")
+	}
 
+	// Ensure transaction cleanup
 	defer func() {
 		if p := recover(); p != nil {
 			tx.Rollback()
-			panic(p)
+			panic(p) // Re-throw panic after rollback
 		}
 	}()
 
+	// Wrap transaction in DbTransaction
 	pgTx := &DbTransaction{
 		conn: connection,
 		tx:   tx,
 	}
 
+	// Execute the function
 	if err := fn(pgTx); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil {
 			log.Error().Err(rbErr).Msg("failed to rollback transaction")
 		}
-		return err
+		return fmt.Errorf("transaction function failed: %w", err)
 	}
 
-	return tx.Commit()
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
+
+
 
 // ViewTx executes a read-only transaction
 func (connection *DbConnection) ViewTx(fn func(portainer.Transaction) error) error {
@@ -491,10 +506,40 @@ func (connection *DbConnection) CreateObjectWithStringId(bucketName string, id [
 
 // GetObject retrieves an object from a table
 func (connection *DbConnection) GetObject(bucketName string, key []byte, object any) error {
+	// Validate inputs
+	if connection == nil || connection.DB == nil {
+		return ErrNoConnection
+	}
+
+	if bucketName == "" {
+		return fmt.Errorf("bucket name cannot be empty")
+	}
+
+	if len(key) == 0 {
+		return fmt.Errorf("key cannot be empty")
+	}
+
+	if object == nil {
+		return fmt.Errorf("object cannot be nil")
+	}
+
+	// Use a transaction to fetch the object
 	return connection.ViewTx(func(tx portainer.Transaction) error {
-		return tx.GetObject(bucketName, key, object)
+		// Validate the transaction object
+		if tx == nil {
+			return fmt.Errorf("transaction is nil")
+		}
+
+		// Fetch the object using the transaction
+		err := tx.GetObject(bucketName, key, object)
+		if err != nil {
+			return fmt.Errorf("failed to get object from bucket '%s': %w", bucketName, err)
+		}
+
+		return nil
 	})
 }
+
 
 // UpdateObject updates an object in a table
 func (connection *DbConnection) UpdateObject(bucketName string, key []byte, object any) error {
