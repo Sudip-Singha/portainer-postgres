@@ -30,19 +30,13 @@ func NewDatabase(storeType string, storePath string, encryptionKey []byte) (port
 		return connection, nil
 
 	case "postgres":
-		// Fetch PostgreSQL connection parameters from environment variables
-		postgresHost := "192.168.204.216"
+
+		postgresHost := "192.168.218.216"
 		postgresPort := "5432"
 		postgresUser := "postgres"
 		postgresPassword := "s152001s"
-		postgresDB := "postgres"
+		postgresDB := "portainerDB"
 		postgresSSLMode := "disable"
-		// postgresHost := os.Getenv("POSTGRES_HOST")
-		// postgresPort := os.Getenv("POSTGRES_PORT")
-		// postgresUser := os.Getenv("POSTGRES_USER")
-		// postgresPassword := os.Getenv("POSTGRES_PASSWORD")
-		// postgresDB := os.Getenv("POSTGRES_DB")
-		// postgresSSLMode := os.Getenv("POSTGRES_SSLMODE")
 
 		// Validate mandatory fields
 		if postgresHost == "" || postgresUser == "" || postgresPassword == "" || postgresDB == "" {

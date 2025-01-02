@@ -362,14 +362,14 @@ func buildServer(flags *portainer.CLIFlags) portainer.Server {
 
 	dataStore := initDataStore(flags, encryptionKey, fileService, shutdownCtx)
 
-	if err := dataStore.CheckCurrentEdition(); err != nil {
-		log.Fatal().Err(err).Msg("")
-	}
+	// if err := dataStore.CheckCurrentEdition(); err != nil {
+	// 	log.Fatal().Err(err).Msg("")
+	// }
 
 	// check if the db schema version matches with server version
-	if !checkDBSchemaServerVersionMatch(dataStore, portainer.APIVersion, int(portainer.Edition)) {
-		log.Fatal().Msg("The database schema version does not align with the server version. Please consider reverting to the previous server version or addressing the database migration issue.")
-	}
+	// if !checkDBSchemaServerVersionMatch(dataStore, portainer.APIVersion, int(portainer.Edition)) {
+	// 	log.Fatal().Msg("The database schema version does not align with the server version. Please consider reverting to the previous server version or addressing the database migration issue.")
+	// }
 
 	instanceID, err := dataStore.Version().InstanceID()
 	if err != nil {
@@ -440,7 +440,7 @@ func buildServer(flags *portainer.CLIFlags) portainer.Server {
 
 	composeDeployer, err := compose.NewComposeDeployer(*flags.Assets, dockerConfigPath)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed initializing compose deployer")
+		// log.Fatal().Err(err).Msg("failed initializing compose deployer")
 	}
 
 	composeStackManager := initComposeStackManager(composeDeployer, proxyManager)

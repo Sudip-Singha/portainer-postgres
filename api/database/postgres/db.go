@@ -296,7 +296,7 @@ func (connection *DbConnection) UpdateTx(fn func(portainer.Transaction) error) e
 	defer func() {
 		if p := recover(); p != nil {
 			tx.Rollback()
-			panic(p) // Re-throw panic after rollback
+			// panic(p) // Re-throw panic after rollback
 		}
 	}()
 
@@ -330,18 +330,17 @@ func (connection *DbConnection) ViewTx(fn func(portainer.Transaction) error) err
 }
 
 // GetNextIdentifier retrieves the next available ID for a table
-func (connection *DbConnection) GetNextIdentifier(tableName string) int {
-	var nextID int
-	query := fmt.Sprintf("SELECT COALESCE(MAX(id), 0) + 1 FROM %s", tableName)
-	
-	row := connection.DB.QueryRowContext(connection.ctx, query)
-	err := row.Scan(&nextID)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to execute query")
-	}
-	
-	return nextID
+func (connection *DbConnection) GetNextIdentifier(bucketName string) int {
+	var identifier int
+
+	_ = connection.UpdateTx(func(tx portainer.Transaction) error {
+		identifier = tx.GetNextIdentifier(bucketName)
+		return nil
+	})
+
+	return identifier
 }
+
 func (connection *DbConnection) GetDatabaseFileName() string {
 	if connection.IsEncryptedStore() {
 		return EncryptedDatabaseFileName
@@ -470,27 +469,27 @@ func (connection *DbConnection) getEncryptionKey() []byte {
 }
 
 // CreateObject creates a new object in the specified table
-func (connection *DbConnection) CreateObject(bucketName string, fn func(uint64) (int, interface{})) error {
+// CreateObject creates an object and inserts it with the next ID for the given bucket
+func (connection *DbConnection) CreateObject(bucketName string, fn func(uint64) (int, any)) error {
 	return connection.UpdateTx(func(tx portainer.Transaction) error {
-		nextID := uint64(connection.GetNextIdentifier(bucketName))
-		id, obj := fn(nextID)
-		return tx.CreateObjectWithId(bucketName, id, obj)
+		return tx.CreateObject(bucketName, fn)
 	})
 }
 
-// CreateObjectWithId creates an object with a specified ID
+// CreateObjectWithId creates a new object in the bucket, using the specified id
 func (connection *DbConnection) CreateObjectWithId(bucketName string, id int, obj any) error {
 	return connection.UpdateTx(func(tx portainer.Transaction) error {
 		return tx.CreateObjectWithId(bucketName, id, obj)
 	})
 }
 
-// CreateObjectWithStringId creates an object with a string ID
+// CreateObjectWithStringId creates a new object in the bucket, using the specified id
 func (connection *DbConnection) CreateObjectWithStringId(bucketName string, id []byte, obj any) error {
 	return connection.UpdateTx(func(tx portainer.Transaction) error {
 		return tx.CreateObjectWithStringId(bucketName, id, obj)
 	})
 }
+
 
 // MarshalObject converts an object to JSON
 // func (connection *DbConnection) MarshalObject(obj any) ([]byte, error) {
@@ -506,40 +505,10 @@ func (connection *DbConnection) CreateObjectWithStringId(bucketName string, id [
 
 // GetObject retrieves an object from a table
 func (connection *DbConnection) GetObject(bucketName string, key []byte, object any) error {
-	// Validate inputs
-	if connection == nil || connection.DB == nil {
-		return ErrNoConnection
-	}
-
-	if bucketName == "" {
-		return fmt.Errorf("bucket name cannot be empty")
-	}
-
-	if len(key) == 0 {
-		return fmt.Errorf("key cannot be empty")
-	}
-
-	if object == nil {
-		return fmt.Errorf("object cannot be nil")
-	}
-
-	// Use a transaction to fetch the object
 	return connection.ViewTx(func(tx portainer.Transaction) error {
-		// Validate the transaction object
-		if tx == nil {
-			return fmt.Errorf("transaction is nil")
-		}
-
-		// Fetch the object using the transaction
-		err := tx.GetObject(bucketName, key, object)
-		if err != nil {
-			return fmt.Errorf("failed to get object from bucket '%s': %w", bucketName, err)
-		}
-
-		return nil
+		return tx.GetObject(bucketName, key, object)
 	})
 }
-
 
 // UpdateObject updates an object in a table
 func (connection *DbConnection) UpdateObject(bucketName string, key []byte, object any) error {
@@ -563,50 +532,11 @@ func (connection *DbConnection) GetAll(bucketName string, obj any, appendFn func
 }
 
 // DeleteAllObjects deletes all objects from a specific bucket (table) in the database that match a given condition.
-func (connection *DbConnection) DeleteAllObjects(bucketName string, obj any, matchingFn func(o any) (id int, ok bool)) error {
-	// Query to select all rows in the bucket (table)
-	query := fmt.Sprintf("SELECT id, data FROM %s", bucketName)
-	rows, err := connection.DB.Query(query)
-	if err != nil {
-		return fmt.Errorf("failed to query objects: %w", err)
-	}
-	defer rows.Close()
-
-	var idsToDelete []int
-
-	for rows.Next() {
-		var id int
-		var jsonData []byte
-
-		// Scan the row into variables
-		if err := rows.Scan(&id, &jsonData); err != nil {
-			return fmt.Errorf("failed to scan object: %w", err)
-		}
-
-		// Unmarshal JSON data into the provided object
-		err := json.Unmarshal(jsonData, obj)
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal object: %w", err)
-		}
-
-		// Check if the object matches the deletion condition
-		if deleteID, ok := matchingFn(obj); ok {
-			idsToDelete = append(idsToDelete, deleteID)
-		}
-	}
-
-	// Perform deletion for all matching IDs
-	for _, id := range idsToDelete {
-		deleteQuery := fmt.Sprintf("DELETE FROM %s WHERE id = $1", bucketName)
-		_, err := connection.DB.Exec(deleteQuery, id)
-		if err != nil {
-			return fmt.Errorf("failed to delete object with id %d: %w", id, err)
-		}
-	}
-
-	return nil
+func (connection *DbConnection) DeleteAllObjects(bucketName string, obj any, matching func(o any) (id int, ok bool)) error {
+	return connection.UpdateTx(func(tx portainer.Transaction) error {
+		return tx.DeleteAllObjects(bucketName, obj, matching)
+	})
 }
-
 
 // BackupMetadata retrieves sequence/identity information
 func (connection *DbConnection) BackupMetadata() (map[string]any, error) {

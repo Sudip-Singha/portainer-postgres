@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"context"
+	"encoding/binary"
 
 	// "github.com/jmoiron/sqlx"
 	dserrors "github.com/portainer/portainer/api/dataservices/errors"
@@ -20,46 +21,110 @@ type DbTransaction struct {
 }
 
 func (tx *DbTransaction) SetServiceName(bucketName string) error {
-	// In PostgreSQL, this would typically involve creating a table if it doesn't exist
-	createTableQuery := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
-			id SERIAL PRIMARY KEY,
-			data JSONB NOT NULL
-		)`, bucketName)
-	_, err := tx.tx.Exec(createTableQuery)
-	return err
+    // Create a table that closely mimics BoltDB's key-value storage pattern
+    createTableQuery := fmt.Sprintf(`
+        CREATE TABLE IF NOT EXISTS %s (
+            id TEXT PRIMARY KEY,
+            data JSONB NOT NULL
+        )`, bucketName)
+    
+    _, err := tx.tx.Exec(createTableQuery)
+    return err
 }
 
 func (tx *DbTransaction) GetObject(bucketName string, key []byte, object any) error {
-	query := fmt.Sprintf("SELECT data FROM %s WHERE id = $1", bucketName)
-	var jsonData []byte
+    // Determine the key format
+    var keyValue any
+    keyInt := binary.BigEndian.Uint64(key)
+    keyStr := fmt.Sprintf("%d", keyInt)
+    
+    if bucketName == "settings" || bucketName == "ssl" || bucketName == "version" {
+        keyValue = string(key) // Use the key as a string for these buckets
+    } else {
+        keyValue = keyStr // Default to the integer representation
+    }
 
-	row := tx.tx.QueryRowContext(tx.ctx, query, string(key))
-	err := row.Scan(&jsonData)
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("%w (bucket=%s, key=%s)", dserrors.ErrObjectNotFound, bucketName, string(key))
-	} else if err != nil {
-		return err
-	}
+    // Construct the query
+    query := fmt.Sprintf("SELECT data FROM %s WHERE id = $1", bucketName)
+    fmt.Println("query:", query)
+    fmt.Println("bucketName in getobj:", bucketName)
+    fmt.Println("keyValue in getobj:", keyValue)
 
-	return json.Unmarshal(jsonData, object)
+    // Execute the query
+    var rawData []byte
+    row := tx.tx.QueryRow(query, keyValue)
+    err := row.Scan(&rawData)
+
+    if err != nil {
+        fmt.Println("row.Scan error:", err)
+        if err == sql.ErrNoRows {
+            return fmt.Errorf("%w (bucket=%s, key=%v)", dserrors.ErrObjectNotFound, bucketName, keyValue)
+        }
+        return err
+    }
+
+    // Unmarshal the JSON data into the object
+    err = json.Unmarshal(rawData, object)
+    if err != nil {
+        fmt.Println("json.Unmarshal error:", err)
+        return err
+    }
+
+    return nil
 }
 
 
 func (tx *DbTransaction) UpdateObject(bucketName string, key []byte, object any) error {
-	data, err := json.Marshal(object)
-	if err != nil {
-		return err
-	}
+    data, err := json.Marshal(object)
+    if err != nil {
+        return fmt.Errorf("failed to marshal object: %w", err)
+    }
 
-	query := fmt.Sprintf("UPDATE %s SET data = $1 WHERE id = $2", bucketName)
-	_, err = tx.tx.Exec(query, data, string(key))
-	return err
+    stringObj := string(data)
+    fmt.Println("bucketName in updateobj:", bucketName)
+    fmt.Println("key in updateobj:", string(key))
+    fmt.Println("stringobj in updateobj:", stringObj)
+
+    var keyValue any
+    if bucketName == "settings" || bucketName == "ssl" || bucketName == "version" {
+        keyValue = string(key)
+    } else {
+        keyValue = fmt.Sprintf("%d", binary.BigEndian.Uint64(key))
+    }
+
+    // Check if the key exists
+    selectQuery := fmt.Sprintf("SELECT id FROM %s WHERE id = $1", bucketName)
+    fmt.Println("query in updateobj: ", selectQuery)
+
+    var existingKey string
+    err = tx.tx.QueryRow(selectQuery, keyValue).Scan(&existingKey)
+    if err == sql.ErrNoRows {
+        // Key doesn't exist, insert it
+        insertQuery := fmt.Sprintf("INSERT INTO %s (id, data) VALUES ($1, $2)", bucketName)
+        _, err = tx.tx.Exec(insertQuery, keyValue, stringObj)
+        if err != nil {
+            return fmt.Errorf("failed to insert data: %w", err)
+        }
+    } else if err != nil {
+        return fmt.Errorf("failed to query database: %w", err)
+    } else {
+        // Update the existing key
+        updateQuery := fmt.Sprintf("UPDATE %s SET data = $1 WHERE id = $2", bucketName)
+        _, err = tx.tx.Exec(updateQuery, stringObj, keyValue)
+        if err != nil {
+            return fmt.Errorf("failed to execute update query: %w", err)
+        }
+    }
+
+    return nil
 }
+
 
 func (tx *DbTransaction) DeleteObject(bucketName string, key []byte) error {
 	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1", bucketName)
-	_, err := tx.tx.Exec(query, string(key))
+	keyInt := binary.BigEndian.Uint64(key)
+    keyStr := fmt.Sprintf("%d", keyInt)
+	_, err := tx.tx.Exec(query, keyStr)
 	return err
 }
 
@@ -76,20 +141,18 @@ func (tx *DbTransaction) DeleteAllObjects(bucketName string, obj any, matchingFn
 
 	// Use reflection to create a new slice of the same type as obj
 	objType := reflect.TypeOf(obj)
-	// objSliceType := reflect.SliceOf(objType)
-	// objSlice := reflect.New(objSliceType).Elem()
 
 	for rows.Next() {
 		var id string
-		var jsonData []byte
+		var rawData []byte
 
-		if err := rows.Scan(&id, &jsonData); err != nil {
+		if err := rows.Scan(&id, &rawData); err != nil {
 			return err
 		}
 
 		// Unmarshal the object
 		tempObj := reflect.New(objType).Elem()
-		if err := json.Unmarshal(jsonData, tempObj.Addr().Interface()); err != nil {
+		if err := json.Unmarshal(rawData, tempObj.Addr().Interface()); err != nil {
 			return err
 		}
 
@@ -113,7 +176,8 @@ func (tx *DbTransaction) DeleteAllObjects(bucketName string, obj any, matchingFn
 
 func (tx *DbTransaction) GetNextIdentifier(bucketName string) int {
 	var nextID int
-	query := fmt.Sprintf("SELECT COALESCE(MAX(id), 0) + 1 FROM %s", bucketName)
+	// Convert the max(id) to an integer
+	query := fmt.Sprintf("SELECT COALESCE(CAST(MAX(CAST(id AS INTEGER)) AS INTEGER), 0) + 1 FROM %s", bucketName)
 	
 	err := tx.tx.QueryRow(query).Scan(&nextID)
 	if err != nil {
@@ -130,7 +194,8 @@ func (tx *DbTransaction) GetNextIdentifier(bucketName string) int {
 func (tx *DbTransaction) CreateObject(bucketName string, fn func(uint64) (int, any)) error {
 	// Get the next sequence number
 	var seqID uint64
-	query := fmt.Sprintf("SELECT COALESCE(MAX(id), 0) + 1 FROM %s", bucketName)
+	// Convert the max(id) to an integer
+	query := fmt.Sprintf("SELECT COALESCE(CAST(MAX(CAST(id AS INTEGER)) AS INTEGER), 0) + 1 FROM %s", bucketName)
 	err := tx.tx.QueryRow(query).Scan(&seqID)
 	if err != nil {
 		return fmt.Errorf("failed to fetch next sequence ID: %w", err)
@@ -154,7 +219,6 @@ func (tx *DbTransaction) CreateObject(bucketName string, fn func(uint64) (int, a
 
 	return nil
 }
-
 
 func (tx *DbTransaction) CreateObjectWithId(bucketName string, id int, obj any) error {
 	data, err := json.Marshal(obj)
@@ -187,13 +251,13 @@ func (tx *DbTransaction) GetAll(bucketName string, obj any, appendFn func(o any)
 	defer rows.Close()
 
 	for rows.Next() {
-		var jsonData []byte
-		if err := rows.Scan(&jsonData); err != nil {
+		var rawData []byte
+		if err := rows.Scan(&rawData); err != nil {
 			return err
 		}
 
 		// Unmarshal the object
-		err := json.Unmarshal(jsonData, obj)
+		err := json.Unmarshal(rawData, obj)
 		if err != nil {
 			return err
 		}
@@ -217,13 +281,13 @@ func (tx *DbTransaction) GetAllWithKeyPrefix(bucketName string, keyPrefix []byte
 	defer rows.Close()
 
 	for rows.Next() {
-		var jsonData []byte
-		if err := rows.Scan(&jsonData); err != nil {
+		var rawData []byte
+		if err := rows.Scan(&rawData); err != nil {
 			return err
 		}
 
 		// Unmarshal the object
-		err := json.Unmarshal(jsonData, obj)
+		err := json.Unmarshal(rawData, obj)
 		if err != nil {
 			return err
 		}

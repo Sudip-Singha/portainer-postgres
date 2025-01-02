@@ -29,7 +29,6 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.0
 	github.com/hashicorp/golang-lru v0.5.4
-	github.com/jmoiron/sqlx v1.4.0
 	github.com/joho/godotenv v1.4.0
 	github.com/jpillora/chisel v1.10.0
 	github.com/koding/websocketproxy v0.0.0-20181220232114-7ed82d81a28c
